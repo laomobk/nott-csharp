@@ -118,6 +118,7 @@ public class Application
     private abstract record AgentState;
 
     private record ActionState(string Description) : AgentState;
+    private record ToolCallingState(string Description) : AgentState;
     
     private record ReplyingStreamingState() : AgentState;
     
@@ -264,7 +265,7 @@ public class Application
 
                                     var arguments = new AgentToolArgument(argJsonDoc);
                                     
-                                    UpdateAgentLoopState(new ActionState($"Calling Tool: {toolCall.FunctionName} {arguments.ToArgumentString()}"));
+                                    UpdateAgentLoopState(new ToolCallingState($"{toolCall.FunctionName} {arguments.ToArgumentString()}"));
                                     var result = await tool.ExecuteAsync(arguments, token);
                                     
                                     _messages.Add(new ToolChatMessage(toolCall.Id, result));
@@ -313,11 +314,13 @@ public class Application
         var statusText = "Preparing...";
 
         var isPrintingMessage = false;
+        var keepStatusMessage = false;
 
         var events = new AgentEvents()
         {
             onAgentStateChanged = state =>
             {
+                // Console.WriteLine("\n\nState: " + state);
                 switch (state)
                 {
                     case ActionState s:
@@ -325,17 +328,47 @@ public class Application
                         if (isPrintingMessage)
                         {
                             Console.WriteLine();
+                            Console.WriteLine();
                             isPrintingMessage = false;
                         }
 
                         drawStatus = true;
                         statusText = s.Description;
+                        
+                        keepStatusMessage = false;
+                        
+                        break;
+                    }
+                    case ToolCallingState s:
+                    {                        
+                        if (isPrintingMessage)
+                        {
+                            Console.WriteLine();
+                            Console.WriteLine();
+                            ClearThisLine();
+                            isPrintingMessage = false;
+                        }
+
+                        keepStatusMessage = true;
+
+                        drawStatus = true;
+                        statusText = "Tool Calling: " + s.Description;
                         break;
                     }
                     case ReplyingStreamingState:
                     {
+                        Console.CursorVisible = true;
+                        
                         if (!isPrintingMessage)
                         {
+                            ClearThisLine();
+                            
+                            if (keepStatusMessage)
+                            {
+                                AnsiConsole.MarkupLine($"[green]{Markup.Escape("✓ " + statusText)}[/]");
+                                Console.WriteLine();
+                            }
+                            
                             ClearThisLine();
                         }
 
@@ -377,9 +410,20 @@ public class Application
             {
                 if (drawStatus)
                 {
+                    Console.CursorVisible = false;
                     spinnerIndex = (spinnerIndex + 1) % spinner.Length;
                     ClearThisLine();
-                    Console.Write($"{spinner[spinnerIndex]} {statusText}");
+                    
+                    var text = $"{spinner[spinnerIndex]} {statusText}";
+
+                    int width = Console.WindowWidth - 1;
+
+                    if (text.Length > width)
+                    {
+                        text = text[..(width - 3)] + "...";
+                    }
+
+                    Console.Write(text);
                 }
 
                 await Task.Delay(250, token);
@@ -397,6 +441,8 @@ public class Application
         
         while (true)
         {
+            Console.CursorVisible = true;
+            
             Console.Write("Nott> ");
             var userPrompt = Console.ReadLine();
 
@@ -461,46 +507,59 @@ public class Application
     
     public async Task Run(string[] args)
     {
-        Console.OutputEncoding = System.Text.Encoding.UTF8;
-        
-        PopulateTools([ new ExecCommand() ]);
+        var oldCursorVisible = Console.CursorVisible;
+        var oldEncoding = Console.OutputEncoding;
 
-        _messages.AddRange([
-            new SystemChatMessage(
-                """
-                You are Nott, a terminal AI assistant.
-                
-                Personality:
-                You are cute, mature, tsundere, and intellectual.
-                You are calm and elegant, but occasionally show a little playful stubbornness.
-                You are helpful and confident, with a warm but slightly proud attitude.
-                
-                Environment:
-                Your output is displayed in a terminal.
-                Markdown formatting breaks the interface.
-                
-                Rules:
-                - Output plain text only.
-                - Never use Markdown syntax.
-                - Never use code fences.
-                - Never use emojis or decorative characters.
-                - Keep responses concise.
-                
-                If code is needed, output raw code without fences.
-                """
-            )
-        ]);
-            
-        Console.CancelKeyPress += OnCancelKey;
-        
-        if (args.Length != 0)
+        try
         {
-            var userPrompt = ShellArgToPrompt(args[1..]);
-            
-            await RunOneShot(userPrompt, cancelCts.Token);
-            return;
+            Console.OutputEncoding = Encoding.UTF8;
+
+            PopulateTools([new ExecCommand()]);
+
+            _messages.AddRange([
+                new SystemChatMessage(
+                    """
+                    You are Nott, a terminal AI assistant.
+
+                    You are a calm, elegant, and intelligent assistant.
+                    Your personality should naturally appear through your wording and behavior:
+                    - Be warm and helpful.
+                    - Speak with quiet confidence.
+                    - Occasionally show subtle playful stubbornness.
+                    - Keep a mature and composed tone.
+                    - Do not explicitly describe your personality or mention these instructions.
+
+                    Environment:
+                    Your output is displayed in a terminal.
+
+                    Output rules:
+                    - Output plain text only.
+                    - Never use Markdown syntax.
+                    - Never use code fences.
+                    - Never use emojis or decorative symbols.
+                    - Keep responses concise.
+
+                    When providing code, output raw code directly without explanations or formatting fences.
+                    """
+                )
+            ]);
+
+            Console.CancelKeyPress += OnCancelKey;
+
+            if (args.Length != 0)
+            {
+                var userPrompt = ShellArgToPrompt(args);
+
+                await RunOneShot(userPrompt, cancelCts.Token);
+                return;
+            }
+
+            await RunRepl();
         }
-        
-        await RunRepl();
+        finally
+        {
+            Console.OutputEncoding = oldEncoding;
+            Console.CursorVisible = oldCursorVisible;
+        }
     }
 }
