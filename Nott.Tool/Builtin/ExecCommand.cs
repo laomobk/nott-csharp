@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.ComponentModel;
-using Nott.Tool;
+using System.Text;
 
 namespace Nott.Tool.Builtin;
 
@@ -52,23 +52,31 @@ public class ExecCommand
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
         };
 
         if (OperatingSystem.IsWindows())
         {
-            if (Path.GetFileNameWithoutExtension(shell).Equals("cmd", StringComparison.OrdinalIgnoreCase))
+            if (Path.GetFileNameWithoutExtension(shell)
+                .Equals("cmd", StringComparison.OrdinalIgnoreCase))
             {
-                psi.Arguments = $"/c \"{command}\"";
+                psi.ArgumentList.Add("/c");
+                psi.ArgumentList.Add(command);
             }
             else
             {
-                psi.Arguments = $"-NoProfile -NonInteractive -Command \"{command}\"";
+                psi.ArgumentList.Add("-NoProfile");
+                psi.ArgumentList.Add("-NonInteractive");
+                psi.ArgumentList.Add("-Command");
+                psi.ArgumentList.Add(command);
             }
         }
         else
         {
-            psi.Arguments = $"-c \"{command}\"";
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add(command);
         }
 
         using var process = new Process();
