@@ -9,9 +9,12 @@
 
     <ItemGroup>
       <PackageReference Include="Newtonsoft.Json" Version="13.0.5-beta1" />
-      <PackageReference Include="OpenAI" Version="2.13.0" />
       <PackageReference Include="ReadLine" Version="2.0.1" />
       <PackageReference Include="Spectre.Console" Version="0.57.3-alpha.0.7" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Nott.Agent\Nott.Agent.csproj" />
     </ItemGroup>
 
 </Project>

@@ -1,31 +1,11 @@
 using System.Diagnostics;
-using System.Text.Json;
-using OpenAI.Chat;
+using System.ComponentModel;
+using Nott.Tool;
 
-namespace Nott.CLI.Tools;
+namespace Nott.Tool.Builtin;
 
-public class ExecCommand : IAgentTool
+public class ExecCommand
 {
-    public ChatTool GetChatTool()
-    {
-        return ChatTool.CreateFunctionTool(
-            functionName: "exec-command",
-            functionDescription: "Run a command in a system shell.",
-            functionParameters: BinaryData.FromString(
-                """
-                  {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "command to execute"
-                        }
-                    },
-                    "required": ["command"]
-                  }
-                """));
-    }
-    
     private static string FindShell()
     {
         if (OperatingSystem.IsWindows())
@@ -54,9 +34,11 @@ public class ExecCommand : IAgentTool
         return File.Exists("/bin/bash") ? "/bin/bash" : "/bin/sh";
     }
 
-    public async Task<string> ExecuteAsync(AgentToolArgument args, CancellationToken cancellationToken)
+    [NottChatTool("exec-command", "Run a command in a system shell.")]
+    public async Task<object> ExecuteAsync(
+        [Description("Command to execute.")] string command,
+        CancellationToken cancellationToken)
     {
-        var command = args.GetStringArg("command") ?? null;
         if (string.IsNullOrEmpty(command))
         {
             return "<invalid command: empty command>";
@@ -118,11 +100,11 @@ public class ExecCommand : IAgentTool
         var stdout = await stdoutTask;
         var stderr = await stderrTask;
 
-        return JsonSerializer.Serialize(new
+        return new
         {
             exitCode = process.ExitCode,
             stdout,
             stderr
-        });
+        };
     }
 }

@@ -1,153 +1,30 @@
-using System.Buffers;
-using System.ClientModel;
-using System.Diagnostics;
 using System.Text;
-using System.Text.Json;
-using Nott.CLI.Tools;
+using Nott.Agent;
+using Nott.Tool.Builtin;
 using OpenAI;
 using OpenAI.Chat;
+
 using Spectre.Console;
 
 namespace Nott.CLI;
 
 public class Application
 {
-    private class StreamingToolCallsBuilder
-    {
-        private class SequenceBuilder<T>
-        {
-            private class Segment<T> : ReadOnlySequenceSegment<T>
-            {
-                public Segment(ReadOnlyMemory<T> memory, long runningIndex)
-                {
-                    Memory = memory;
-                    RunningIndex = runningIndex;
-                }
-                
-                public Segment<T> Append(ReadOnlyMemory<T> memory)
-                {
-                    long newRunningIndex; 
-                    checked
-                    {
-                        newRunningIndex = RunningIndex + memory.Length;   
-                    }
-                    var seg = new Segment<T>(memory, newRunningIndex);
-                    Next = seg;
-                    return seg;
-                }
-            }
-            
-            private Segment<T>? _begin;
-            private Segment<T>? _end;
-
-            public void AddSegment(ReadOnlyMemory<T> memory)
-            {
-                if (_begin == null)
-                {
-                    Debug.Assert(_end == null);
-                    
-                    _begin = new Segment<T>(memory, 0);
-                    _end = _begin;
-                }
-                else
-                {
-                    _end = _end!.Append(memory);
-                }
-            }
-
-            public ReadOnlySequence<T> BuildSequence()
-            {
-                if (_begin == null)
-                {
-                    Debug.Assert(_end == null);
-                    return ReadOnlySequence<T>.Empty;
-                }
-
-                if (_begin == _end)
-                {
-                    Debug.Assert(_begin.Next == null);
-                    return new ReadOnlySequence<T>(_begin.Memory);
-                }
-
-                return new ReadOnlySequence<T>(_begin, 0, _end!, _end!.Memory.Length);
-            }
-        }
-        
-        private readonly Dictionary<int, string> _idxToCallId = new();
-        private readonly Dictionary<int, string> _idxToFunctionName = new();
-        private readonly Dictionary<int, SequenceBuilder<byte>> _idxToFuncArgumentsSequence = new();
-        
-        public void AddStreamingUpdate(StreamingChatToolCallUpdate update)
-        {
-            if (update.ToolCallId != null)
-            {
-                _idxToCallId[update.Index] = update.ToolCallId;
-            }
-
-            if (update.FunctionName != null)
-            {
-                _idxToFunctionName[update.Index] = update.FunctionName;
-            }
-
-            if (update.FunctionArgumentsUpdate != null && !update.FunctionArgumentsUpdate.ToMemory().IsEmpty)
-            {
-                if (!_idxToFuncArgumentsSequence.TryGetValue(update.Index, out var funcArgs))
-                {
-                    funcArgs = _idxToFuncArgumentsSequence[update.Index] = new SequenceBuilder<byte>();
-                }
-                
-                funcArgs.AddSegment(update.FunctionArgumentsUpdate);
-            }
-        }
-
-        public IReadOnlyList<ChatToolCall> Build()
-        {
-            var toolCalls = new List<ChatToolCall>();
-
-            foreach (var (idx, id) in _idxToCallId)
-            {
-                toolCalls.Add(ChatToolCall.CreateFunctionToolCall(
-                    id, _idxToFunctionName[idx], 
-                    BinaryData.FromBytes(_idxToFuncArgumentsSequence[idx].BuildSequence().ToArray())));
-            }
-
-            return toolCalls;
-        }
-    }
-
-    private abstract record AgentState;
-
-    private record ActionState(string Description) : AgentState;
-    private record ToolCallingState(string Description) : AgentState;
+    private AgentSession _session;
     
-    private record ReplyingStreamingState() : AgentState;
-    
-    private record LoopFinishedState() : AgentState;
-    
-    private class AgentEvents
-    {
-        public Action<string>? onToolCall;
-        public Action<string>? onMessagePartReceived;
-        public Action<AgentState>? onAgentStateChanged;
-        public Action? onAgentLoopBreak;
-    }
-
     delegate void StatusReportFunc(string status);
     
-    private Dictionary<string, IAgentTool> _funcNameToAgentTools = new();
-
-    private readonly List<ChatMessage> _messages = [];
-    private readonly List<ChatTool> _tools = [];
-    private readonly ChatClient _client;
-
     private CancellationTokenSource cancelCts = new();
+    private volatile bool _cancelRequested;
 
-    public Application(ApiKeyCredential apiKey)
+    private AgentToolStorage _toolStorage = new();
+
+    public Application(System.ClientModel.ApiKeyCredential apiKey)
     {
-        _client = new ChatClient("deepseek-v4-flash", apiKey, options: new OpenAIClientOptions
+        _session = new AgentSession(Guid.NewGuid(), new ChatClient("deepseek-v4-flash", apiKey, new OpenAIClientOptions
         {
             Endpoint = new Uri("https://api.deepseek.com")
-        });
+        }));
     }
     
     private string ShellArgToPrompt(string[] args)
@@ -155,152 +32,6 @@ public class Application
         return string.Join(" ", args);
     }
     
-    private void PopulateTools(List<IAgentTool> agentTools)
-    {
-        foreach (var agentTool in agentTools)
-        {
-            var chatTool = agentTool.GetChatTool();
-            if (_funcNameToAgentTools.TryAdd(chatTool.FunctionName, agentTool))
-            {
-                _tools.Add(chatTool);
-            }
-        }
-    }
-    
-    private async Task AgentLoopAsync(AgentEvents events, CancellationToken token)
-    {
-        AgentState currentState = new ActionState("Thinking...");
-
-        void UpdateAgentLoopState<T>(T state) where T : AgentState
-        {
-            if (currentState is not T)
-            {
-                currentState = state;
-                events.onAgentStateChanged?.Invoke(state);
-            }
-        }
-
-        events.onAgentStateChanged?.Invoke(currentState);
-
-        var chatOptions = new ChatCompletionOptions();
-
-        foreach (var tool in _tools)
-        {
-            chatOptions.Tools.Add(tool);
-        }
-
-        /* agent loop */
-
-        var contentBuilder = new StringBuilder();
-
-        try
-        {
-            var nextStep = false;
-            
-            do
-            {
-                contentBuilder.Clear();
-                var toolCallsBuilder = new StreamingToolCallsBuilder();
-
-                nextStep = false;
-
-                var completionUpdates = _client.CompleteChatStreamingAsync(_messages, chatOptions);
-
-                await foreach (var completionUpdate in completionUpdates.WithCancellation(token))
-                {
-                    token.ThrowIfCancellationRequested();
-
-                    /* reply content... */
-                    foreach (var msgPart in completionUpdate.ContentUpdate)
-                    {
-                        if (msgPart.Text.Length > 0)
-                        {
-                            UpdateAgentLoopState(new ReplyingStreamingState());
-                        }
-
-                        contentBuilder.Append(msgPart.Text);
-                        events.onMessagePartReceived?.Invoke(msgPart.Text);
-                    }
-
-                    foreach (var toolCall in completionUpdate.ToolCallUpdates)
-                    {
-                        toolCallsBuilder.AddStreamingUpdate(toolCall);
-                    }
-
-                    switch (completionUpdate.FinishReason)
-                    {
-                        case null: continue;
-
-                        case ChatFinishReason.Stop:
-                        {
-                            if (contentBuilder.Length > 0)
-                            {
-                                _messages.Add(new AssistantChatMessage(contentBuilder.ToString()));
-                            }
-
-                            nextStep = false;
-
-                            break;
-                        }
-
-                        /* dispatch tools... */
-                        case ChatFinishReason.ToolCalls:
-                        {
-                            var toolCalls = toolCallsBuilder.Build();
-                            var assistantMsg = new AssistantChatMessage(toolCalls);
-
-                            if (contentBuilder.Length > 0)
-                            {
-                                assistantMsg.Content.Add(
-                                    ChatMessageContentPart.CreateTextPart(contentBuilder.ToString()));
-                            }
-
-                            _messages.Add(assistantMsg);
-
-                            foreach (var toolCall in toolCalls)
-                            {
-                                if (_funcNameToAgentTools.TryGetValue(toolCall.FunctionName, out var tool))
-                                {
-                                    using var argJsonDoc = JsonDocument.Parse(toolCall.FunctionArguments);
-
-                                    var arguments = new AgentToolArgument(argJsonDoc);
-                                    
-                                    UpdateAgentLoopState(new ToolCallingState($"{toolCall.FunctionName} {arguments.ToArgumentString()}"));
-                                    var result = await tool.ExecuteAsync(arguments, token);
-                                    
-                                    _messages.Add(new ToolChatMessage(toolCall.Id, result));
-                                }
-                            }
-
-                            nextStep = true;
-
-                            break;
-                        }
-                        case ChatFinishReason.Length:
-                            throw new NotImplementedException("Incomplete model output due to MaxTokens parameter or token limit exceeded.");
-
-                        case ChatFinishReason.ContentFilter:
-                            throw new NotImplementedException("Omitted content due to a content filter flag.");
-
-                        case ChatFinishReason.FunctionCall:
-                            throw new NotImplementedException("Deprecated in favor of tool calls.");
-                        
-                        default:
-                            throw new ArgumentOutOfRangeException();
-                    }
-                }
-            } while (nextStep);
-            
-            UpdateAgentLoopState(new LoopFinishedState());
-        }
-        catch (OperationCanceledException)
-        {
-            events.onAgentLoopBreak?.Invoke();
-            
-            Console.WriteLine("Agent loop aborted.");
-        }
-    }
-
     private async Task RunOneShot(string userPrompt, CancellationToken token)
     {
         void ClearThisLine()
@@ -308,7 +39,7 @@ public class Application
             Console.Write("\r\x1b[2K");
         }
 
-        _messages.Add(new UserChatMessage(userPrompt));
+        _session.AddChatMessage(new UserChatMessage(userPrompt));
 
         var drawStatus = false;
         var statusText = "Preparing...";
@@ -316,7 +47,7 @@ public class Application
         var isPrintingMessage = false;
         var keepStatusMessage = false;
 
-        var events = new AgentEvents()
+        var events = new AgentEvent()
         {
             onAgentStateChanged = state =>
             {
@@ -398,7 +129,7 @@ public class Application
             onAgentLoopBreak = () => { Console.WriteLine(); }
         };
 
-        var task = AgentLoopAsync(events, token);
+        var task = _session.RunAsync(events, _toolStorage, token);
 
         string[] spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         // string[] spinner = ["><", "<>"];
@@ -426,7 +157,7 @@ public class Application
                     Console.Write(text);
                 }
 
-                await Task.Delay(250, token);
+                await Task.Delay(100, token);
             }
         } catch (OperationCanceledException) {}
 
@@ -438,6 +169,8 @@ public class Application
     private async Task RunRepl()
     {
         Console.WriteLine("She is Nott, chat with her!\n");
+
+        var worked = false;
         
         while (true)
         {
@@ -448,15 +181,25 @@ public class Application
 
             if (userPrompt == null)
             {
+                if (worked)
+                {
+                    Console.WriteLine("\n(Ctrl-C again to leave the Nott alone.)");
+                    worked = false;
+                    continue;
+                }
+
                 Console.WriteLine();
-                continue;
+                break;
             }
+
+            _cancelRequested = false;
 
             if (string.IsNullOrWhiteSpace(userPrompt))
             {
                 continue;
             }
 
+            worked = true;
             if (userPrompt.Trim().StartsWith('/'))
             {
                 switch (userPrompt) 
@@ -466,14 +209,16 @@ public class Application
                         var table = new Table();
                         table.AddColumn("Messages");
                         
-                        foreach (var message in _messages)
+                        foreach (var message in _session.MessageStorage.GetChatMessageList())
                         {
                             var subTable = new Table();
                             subTable.AddColumn($"Contents of {message}");
+                            
                             foreach (var content in message.Content)
                             {
                                 subTable.AddRow(new Text(content.Text));
                             }
+                            
                             table.AddRow(subTable);
                         }
                         AnsiConsole.Write(table);
@@ -499,6 +244,7 @@ public class Application
     private void OnCancelKey(object? sender, ConsoleCancelEventArgs e)
     {
         e.Cancel = true;
+        _cancelRequested = true;
         
         cancelCts.Cancel();
         cancelCts.Dispose();
@@ -514,9 +260,9 @@ public class Application
         {
             Console.OutputEncoding = Encoding.UTF8;
 
-            PopulateTools([new ExecCommand()]);
+            _toolStorage.Load(typeof(ExecCommand));
 
-            _messages.AddRange([
+            _session.AddMessages([
                 new SystemChatMessage(
                     """
                     You are Nott, a terminal AI assistant.

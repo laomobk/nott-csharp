@@ -2,6 +2,10 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Nott.CLI", "Nott.CLI\Nott.CLI.csproj", "{0EF75307-8F18-473E-BA8A-B07B58F2A009}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Nott.Agent", "Nott.Agent\Nott.Agent.csproj", "{00BDFF35-4538-4916-A5C4-DECA0DE80A90}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Nott.Tool", "Nott.Tool\Nott.Tool.csproj", "{62B1CD70-027B-4FDF-93CF-04839C101BC4}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -12,5 +16,13 @@ Global
 		{0EF75307-8F18-473E-BA8A-B07B58F2A009}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0EF75307-8F18-473E-BA8A-B07B58F2A009}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0EF75307-8F18-473E-BA8A-B07B58F2A009}.Release|Any CPU.Build.0 = Release|Any CPU
+		{00BDFF35-4538-4916-A5C4-DECA0DE80A90}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{00BDFF35-4538-4916-A5C4-DECA0DE80A90}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{00BDFF35-4538-4916-A5C4-DECA0DE80A90}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{00BDFF35-4538-4916-A5C4-DECA0DE80A90}.Release|Any CPU.Build.0 = Release|Any CPU
+		{62B1CD70-027B-4FDF-93CF-04839C101BC4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{62B1CD70-027B-4FDF-93CF-04839C101BC4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{62B1CD70-027B-4FDF-93CF-04839C101BC4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{62B1CD70-027B-4FDF-93CF-04839C101BC4}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
