@@ -1,5 +1,6 @@
 using System.ClientModel;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using OpenAI;
 using OpenAI.Chat;
 
@@ -7,17 +8,18 @@ namespace Nott.Agent;
 
 public sealed class AgentSession
 {
-    private Guid _sessionGuid;
+    private Guid _guid;
     private readonly ChatMessageStorage _messageStorage = new ();
     private readonly AgentLoop _agentLoop;
     
     private ChatClient _client;
 
+    public Guid Guid => _guid;
     public ChatMessageStorage MessageStorage => _messageStorage;
 
-    public AgentSession(Guid guid, ChatClient client)
+    public AgentSession(ChatClient client, Guid guid)
     {
-        _sessionGuid = guid;
+        _guid = guid;
         _client = client;
         _agentLoop = new AgentLoop();
     }
@@ -39,11 +41,20 @@ public sealed class AgentSession
 
     public void SerializeSession(BinaryWriter binaryWriter)
     {
-        
+        binaryWriter.Write(_guid.ToByteArray());
+        _messageStorage.Serialize(binaryWriter);
     }
 
-    public static void CreateSessionFromDeserialize(BinaryReader binaryReader)
+    public static AgentSession CreateSessionFromDeserialize(ChatClient client, BinaryReader binaryReader)
     {
-        
+        var guidBytes = binaryReader.ReadBytes(16);
+        if (guidBytes.Length != 16)
+        {
+            throw new InvalidDataException("The serialized session does not contain a valid GUID.");
+        }
+
+        var session = new AgentSession(client, new Guid(guidBytes));
+        session._messageStorage.Deserialize(binaryReader);
+        return session;
     }
 }

@@ -1,4 +1,7 @@
+using System.ClientModel;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Nott.Agent;
 using Nott.Tool.Builtin;
 using OpenAI;
@@ -10,6 +13,13 @@ namespace Nott.CLI;
 
 public class Application
 {
+    private const string DefaultModel = "deepseek-v4-flash";
+    
+    private sealed record AuthConfiguration(
+        [property: JsonPropertyName("baseUrl")] string BaseUrl,
+        [property: JsonPropertyName("apiKey")] string ApiKey
+    );
+    
     private AgentSession _session;
     
     delegate void StatusReportFunc(string status);
@@ -19,12 +29,10 @@ public class Application
 
     private AgentToolStorage _toolStorage = new();
 
-    public Application(System.ClientModel.ApiKeyCredential apiKey)
+    public Application(Guid guid)
     {
-        _session = new AgentSession(Guid.NewGuid(), new ChatClient("deepseek-v4-flash", apiKey, new OpenAIClientOptions
-        {
-            Endpoint = new Uri("https://api.deepseek.com")
-        }));
+        var client = CreateChatClient();
+        _session = LoadSessionFromGuid(client, guid);
     }
     
     private string ShellArgToPrompt(string[] args)
@@ -88,7 +96,7 @@ public class Application
                     }
                     case ReplyingStreamingState:
                     {
-                        Console.CursorVisible = true;
+                        ConsoleCursor.SetVisible(true);
                         
                         if (!isPrintingMessage)
                         {
@@ -141,7 +149,7 @@ public class Application
             {
                 if (drawStatus)
                 {
-                    Console.CursorVisible = false;
+                    ConsoleCursor.SetVisible(false);
                     spinnerIndex = (spinnerIndex + 1) % spinner.Length;
                     ClearThisLine();
                     
@@ -240,6 +248,119 @@ public class Application
         
         outside: return;
     }
+
+    public static AgentSession LoadSessionFromGuid(ChatClient client, Guid guid)
+    {
+        var sessionPath = GetSessionPath(guid);
+        if (!File.Exists(sessionPath))
+        {
+            return new AgentSession(client, guid);
+        }
+        
+        using var stream = File.OpenRead(sessionPath);
+        using var reader = new BinaryReader(stream);
+
+        var session = AgentSession.CreateSessionFromDeserialize(client, reader);
+        if (session.Guid != guid)
+        {
+            throw new InvalidDataException($"Session file '{sessionPath}' contains GUID '{session.Guid}' instead of '{guid}'.");
+        }
+
+        return session;
+    }
+
+    public void SaveSession(AgentSession session)
+    {
+        var sessionPath = GetSessionPath(session.Guid);
+        var sessionDirectory = Path.GetDirectoryName(sessionPath)!;
+        Directory.CreateDirectory(sessionDirectory);
+
+        var temporaryPath = sessionPath + ".tmp";
+        try
+        {
+            using (var stream = File.Create(temporaryPath))
+            {
+                using (var writer = new BinaryWriter(stream))
+                {
+                    session.SerializeSession(writer);
+                }
+            }
+
+            File.Move(temporaryPath, sessionPath, true);
+        }
+        finally
+        {
+            File.Delete(temporaryPath);
+        }
+    }
+
+    private static string GetSessionPath(Guid guid)
+    {
+        return Path.Combine(GetNottDirectory(), "sessions", guid.ToString());
+    }
+
+    private static string GetNottDirectory()
+    {
+        var configuredDirectory = Environment.GetEnvironmentVariable("NOTT_HOME");
+        var dir = string.IsNullOrWhiteSpace(configuredDirectory)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nott")
+            : Path.GetFullPath(configuredDirectory);
+        
+        Directory.CreateDirectory(dir);
+        
+        return dir;
+    }
+
+    private static ChatClient CreateChatClient()
+    {
+        var configurationPath = Path.Combine(GetNottDirectory(), "auth.json");
+        AuthConfiguration? configuration = null;
+
+        try
+        {
+            if (File.Exists(configurationPath))
+            {
+                var json = File.ReadAllText(configurationPath);
+                configuration = JsonSerializer.Deserialize<AuthConfiguration>(json, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+            }
+
+            if (configuration == null)
+            {
+                var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+                if (string.IsNullOrWhiteSpace(apiKey))
+                {
+                    Console.WriteLine("no OPENAI_API_KEY configured, please set OPENAI_API_KEY environment variable.");
+                }
+                else
+                {
+                    configuration = new AuthConfiguration("https://api.deepseek.com", apiKey);
+                }
+            }
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException(
+                $"Configuration file '{configurationPath}' is not valid JSON.", exception);
+        }
+
+        if (!Uri.TryCreate(configuration.BaseUrl, UriKind.Absolute, out var endpoint))
+        {
+            throw new InvalidDataException($"Configuration file '{configurationPath}' contains an invalid baseUrl.");
+        }
+
+        if (string.IsNullOrWhiteSpace(configuration.ApiKey))
+        {
+            throw new InvalidDataException($"Configuration file '{configurationPath}' does not contain an apiKey.");
+        }
+
+        return new ChatClient(DefaultModel, new ApiKeyCredential(configuration.ApiKey), new OpenAIClientOptions
+        {
+            Endpoint = endpoint
+        });
+    }
     
     private void OnCancelKey(object? sender, ConsoleCancelEventArgs e)
     {
@@ -253,7 +374,6 @@ public class Application
     
     public async Task Run(string[] args)
     {
-        var oldCursorVisible = Console.CursorVisible;
         var oldEncoding = Console.OutputEncoding;
 
         try
@@ -262,8 +382,9 @@ public class Application
 
             _toolStorage.Load(typeof(ExecCommand));
 
-            _session.AddMessages([
-                new SystemChatMessage(
+            if (_session.MessageStorage.GetChatMessageList().Count == 0)
+            {
+                _session.AddChatMessage(new SystemChatMessage(
                     """
                     You are Nott, a terminal AI assistant.
 
@@ -287,8 +408,8 @@ public class Application
 
                     When providing code, output raw code directly without explanations or formatting fences.
                     """
-                )
-            ]);
+                ));
+            }
 
             Console.CancelKeyPress += OnCancelKey;
 
@@ -304,8 +425,13 @@ public class Application
         }
         finally
         {
+            SaveSession(_session);
+            
+            AnsiConsole.MarkupLine($"\n\n[bold green]Resume this chat with session id: [bold red]{_session.Guid}[/][/]");
+            
             Console.OutputEncoding = oldEncoding;
-            Console.CursorVisible = oldCursorVisible;
+            
+            ConsoleCursor.SetVisible(true);
         }
     }
 }
