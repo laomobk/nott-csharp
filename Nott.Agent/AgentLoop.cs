@@ -11,9 +11,9 @@ public class AgentLoop()
     {
         AgentState currentState = new ActionState("Thinking...");
 
-        void UpdateAgentLoopState<T>(T state) where T : AgentState
+        void UpdateAgentLoopState<T>(T state, bool force = false) where T : AgentState
         {
-            if (currentState is not T)
+            if (force || currentState is not T)
             {
                 currentState = state;
                 events.onAgentStateChanged?.Invoke(state);
@@ -105,9 +105,9 @@ public class AgentLoop()
 
                                     var arguments = new AgentToolArgument(argJsonDoc);
 
-                                    UpdateAgentLoopState(new ToolCallingState($"{toolCall.FunctionName} {arguments.ToArgumentString()}"));
+                                    UpdateAgentLoopState(new ToolCallingState($"{toolCall.FunctionName} {arguments.ToArgumentString()}"), true);
                                     var result = await tool.ExecuteAsync(arguments, token).ConfigureAwait(false);
-
+                                    
                                     messages.AddChatMessage(new ToolChatMessage(toolCall.Id, result));
                                 }
                                 else

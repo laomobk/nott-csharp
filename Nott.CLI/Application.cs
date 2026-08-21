@@ -55,6 +55,8 @@ public class Application
         var isPrintingMessage = false;
         var keepStatusMessage = false;
 
+        AgentState? lastState = null;
+
         var events = new AgentEvent()
         {
             onAgentStateChanged = state =>
@@ -79,7 +81,14 @@ public class Application
                         break;
                     }
                     case ToolCallingState s:
-                    {                        
+                    {
+                        if (lastState is ToolCallingState)
+                        {
+                            ClearThisLine();
+                            AnsiConsole.MarkupLine($"[green]{Markup.Escape("✓ " + statusText)}[/]");
+                            Console.WriteLine();
+                        }
+                        
                         if (isPrintingMessage)
                         {
                             Console.WriteLine();
@@ -120,6 +129,8 @@ public class Application
                         break;
                     }
                 }
+
+                lastState = state;
             },
 
             onMessagePartReceived = s =>
@@ -314,37 +325,36 @@ public class Application
     private static ChatClient CreateChatClient()
     {
         var configurationPath = Path.Combine(GetNottDirectory(), "auth.json");
-        AuthConfiguration? configuration = null;
+
+        string? apiKey = null;
+        string? baseUrl = null;
 
         try
         {
             if (File.Exists(configurationPath))
             {
                 var json = File.ReadAllText(configurationPath);
-                configuration = JsonSerializer.Deserialize<AuthConfiguration>(json, new JsonSerializerOptions
+                var tempCfg = JsonSerializer.Deserialize<AuthConfiguration>(json, new JsonSerializerOptions
                 {
                     PropertyNameCaseInsensitive = true
                 });
+                apiKey = tempCfg?.ApiKey;
+                baseUrl = tempCfg?.BaseUrl;
             }
 
-            if (configuration == null)
-            {
-                var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-                if (string.IsNullOrWhiteSpace(apiKey))
-                {
-                    Console.WriteLine("no OPENAI_API_KEY configured, please set OPENAI_API_KEY environment variable.");
-                }
-                else
-                {
-                    configuration = new AuthConfiguration("https://api.deepseek.com", apiKey);
-                }
-            }
+            apiKey ??= Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+                ?? throw new ClientCreationException("no OPENAI_API_KEY configured in environment variable or '~/.nott/auth.json.'");
+            
+            baseUrl ??= Environment.GetEnvironmentVariable("OPENAI_API_BASE_URL")
+                ?? throw new ClientCreationException("no OPENAI_API_BASE_URL configured in environment variable or '~/.nott/auth.json.'");
         }
         catch (JsonException exception)
         {
             throw new InvalidDataException(
                 $"Configuration file '{configurationPath}' is not valid JSON.", exception);
         }
+        
+        var configuration = new AuthConfiguration(baseUrl, apiKey);
 
         if (!Uri.TryCreate(configuration.BaseUrl, UriKind.Absolute, out var endpoint))
         {

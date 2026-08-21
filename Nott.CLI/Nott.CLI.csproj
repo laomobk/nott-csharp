@@ -5,6 +5,16 @@
         <TargetFramework>net8.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+
+        <PackAsTool>true</PackAsTool>
+        <ToolCommandName>nott</ToolCommandName>
+        <PackageId>Nott.CLI</PackageId>
+        
+        <Title>Nott</Title>
+        <Description>An AI Assistant living in your terminal.</Description>
+        <RepositoryUrl>https://github.com/laomobk/nott</RepositoryUrl>
+        <RepositoryType>Github</RepositoryType>
+        <PackageTags>Agent</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>
